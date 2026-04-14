@@ -9,7 +9,6 @@ interface GarmentCanvasProps {
   images: PlacedImage[];
 }
 
-// Zone positions relative to canvas (x%, y%, w%, h%) for front view
 const FRONT_ZONES: Record<PlacementZone, [number, number, number, number]> = {
   'chest': [0.3, 0.25, 0.4, 0.25],
   'left-sleeve': [0.05, 0.2, 0.2, 0.2],
@@ -39,53 +38,59 @@ function getZones(garmentId: string, view: 'front' | 'back') {
   return view === 'front' ? FRONT_ZONES : BACK_ZONES;
 }
 
+function adjustBrightness(hex: string, amount: number): string {
+  if (!hex || !hex.startsWith('#')) return hex;
+  const num = parseInt(hex.slice(1), 16);
+  const r = Math.max(0, Math.min(255, ((num >> 16) & 0xff) + amount));
+  const g = Math.max(0, Math.min(255, ((num >> 8) & 0xff) + amount));
+  const b = Math.max(0, Math.min(255, (num & 0xff) + amount));
+  return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, '0')}`;
+}
+
 function drawGarment(
   ctx: CanvasRenderingContext2D,
   garmentId: string,
-  color: string,
+  garmentColor: string,
   view: 'front' | 'back',
   w: number,
   h: number
 ) {
   ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = color;
-  ctx.strokeStyle = adjustBrightness(color, -30);
-  ctx.lineWidth = 2;
+
+  const stroke = adjustBrightness(garmentColor, -30);
 
   switch (garmentId) {
     case 'tshirt':
-      drawTShirt(ctx, w, h, view);
+      drawTShirt(ctx, w, h, view, garmentColor, stroke);
       break;
     case 'hoodie':
-      drawHoodie(ctx, w, h, view);
+      drawHoodie(ctx, w, h, view, garmentColor, stroke);
       break;
     case 'jeans':
-      drawJeans(ctx, w, h);
+      drawJeans(ctx, w, h, garmentColor, stroke);
       break;
     case 'jacket':
-      drawJacket(ctx, w, h, view);
+      drawJacket(ctx, w, h, view, garmentColor, stroke);
       break;
     case 'cap':
-      drawCap(ctx, w, h);
+      drawCap(ctx, w, h, garmentColor, stroke);
       break;
   }
 }
 
-function drawTShirt(ctx: CanvasRenderingContext2D, w: number, h: number, view: 'front' | 'back') {
+function drawTShirt(ctx: CanvasRenderingContext2D, w: number, h: number, view: 'front' | 'back', fill: string, stroke: string) {
+  ctx.fillStyle = fill;
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = 2;
+
   ctx.beginPath();
-  // Neckline
-  const neckW = w * 0.15;
   ctx.moveTo(w * 0.35, h * 0.08);
   ctx.quadraticCurveTo(w * 0.5, h * (view === 'front' ? 0.14 : 0.06), w * 0.65, h * 0.08);
-  // Right shoulder & sleeve
   ctx.lineTo(w * 0.85, h * 0.15);
   ctx.lineTo(w * 0.85, h * 0.35);
   ctx.lineTo(w * 0.72, h * 0.35);
-  // Right body
   ctx.lineTo(w * 0.72, h * 0.88);
-  // Bottom
   ctx.lineTo(w * 0.28, h * 0.88);
-  // Left body
   ctx.lineTo(w * 0.28, h * 0.35);
   ctx.lineTo(w * 0.15, h * 0.35);
   ctx.lineTo(w * 0.15, h * 0.15);
@@ -93,20 +98,22 @@ function drawTShirt(ctx: CanvasRenderingContext2D, w: number, h: number, view: '
   ctx.fill();
   ctx.stroke();
 
-  // Neckline detail
+  // Neckline
   ctx.beginPath();
   ctx.moveTo(w * 0.35, h * 0.08);
   ctx.quadraticCurveTo(w * 0.5, h * (view === 'front' ? 0.14 : 0.06), w * 0.65, h * 0.08);
-  ctx.strokeStyle = adjustBrightness(color(ctx), -50);
+  ctx.strokeStyle = adjustBrightness(fill, -50);
   ctx.lineWidth = 3;
   ctx.stroke();
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = adjustBrightness(color(ctx), -30);
 }
 
-function drawHoodie(ctx: CanvasRenderingContext2D, w: number, h: number, view: 'front' | 'back') {
-  ctx.beginPath();
+function drawHoodie(ctx: CanvasRenderingContext2D, w: number, h: number, view: 'front' | 'back', fill: string, stroke: string) {
+  ctx.fillStyle = fill;
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = 2;
+
   // Hood
+  ctx.beginPath();
   ctx.moveTo(w * 0.32, h * 0.05);
   ctx.quadraticCurveTo(w * 0.5, h * 0.0, w * 0.68, h * 0.05);
   ctx.lineTo(w * 0.7, h * 0.12);
@@ -132,18 +139,21 @@ function drawHoodie(ctx: CanvasRenderingContext2D, w: number, h: number, view: '
   ctx.fill();
   ctx.stroke();
 
-  // Kangaroo pocket (front only)
   if (view === 'front') {
     ctx.beginPath();
     ctx.roundRect(w * 0.3, h * 0.55, w * 0.4, h * 0.15, 8);
-    ctx.strokeStyle = adjustBrightness(color(ctx), -20);
+    ctx.strokeStyle = adjustBrightness(fill, -20);
     ctx.stroke();
   }
 }
 
-function drawJeans(ctx: CanvasRenderingContext2D, w: number, h: number) {
-  ctx.beginPath();
+function drawJeans(ctx: CanvasRenderingContext2D, w: number, h: number, fill: string, stroke: string) {
+  ctx.fillStyle = fill;
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = 2;
+
   // Waistband
+  ctx.beginPath();
   ctx.moveTo(w * 0.25, h * 0.05);
   ctx.lineTo(w * 0.75, h * 0.05);
   ctx.lineTo(w * 0.75, h * 0.1);
@@ -177,7 +187,11 @@ function drawJeans(ctx: CanvasRenderingContext2D, w: number, h: number) {
   ctx.stroke();
 }
 
-function drawJacket(ctx: CanvasRenderingContext2D, w: number, h: number, view: 'front' | 'back') {
+function drawJacket(ctx: CanvasRenderingContext2D, w: number, h: number, view: 'front' | 'back', fill: string, stroke: string) {
+  ctx.fillStyle = fill;
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = 2;
+
   // Collar
   ctx.beginPath();
   ctx.moveTo(w * 0.33, h * 0.05);
@@ -206,18 +220,21 @@ function drawJacket(ctx: CanvasRenderingContext2D, w: number, h: number, view: '
   ctx.fill();
   ctx.stroke();
 
-  // Zipper line (front)
   if (view === 'front') {
     ctx.beginPath();
     ctx.moveTo(w * 0.5, h * 0.14);
     ctx.lineTo(w * 0.5, h * 0.9);
-    ctx.strokeStyle = adjustBrightness(color(ctx), -40);
+    ctx.strokeStyle = adjustBrightness(fill, -40);
     ctx.lineWidth = 2;
     ctx.stroke();
   }
 }
 
-function drawCap(ctx: CanvasRenderingContext2D, w: number, h: number) {
+function drawCap(ctx: CanvasRenderingContext2D, w: number, h: number, fill: string, stroke: string) {
+  ctx.fillStyle = fill;
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = 2;
+
   // Brim
   ctx.beginPath();
   ctx.ellipse(w * 0.5, h * 0.6, w * 0.4, h * 0.08, 0, 0, Math.PI);
@@ -233,24 +250,11 @@ function drawCap(ctx: CanvasRenderingContext2D, w: number, h: number) {
   ctx.fill();
   ctx.stroke();
 
-  // Button on top
+  // Button
   ctx.beginPath();
   ctx.arc(w * 0.5, h * 0.14, 5, 0, Math.PI * 2);
-  ctx.fillStyle = adjustBrightness(ctx.fillStyle as string, -30);
+  ctx.fillStyle = adjustBrightness(fill, -30);
   ctx.fill();
-}
-
-function color(ctx: CanvasRenderingContext2D): string {
-  return ctx.fillStyle as string;
-}
-
-function adjustBrightness(hex: string, amount: number): string {
-  if (!hex || !hex.startsWith('#')) return hex;
-  const num = parseInt(hex.slice(1), 16);
-  const r = Math.max(0, Math.min(255, ((num >> 16) & 0xff) + amount));
-  const g = Math.max(0, Math.min(255, ((num >> 8) & 0xff) + amount));
-  const b = Math.max(0, Math.min(255, (num & 0xff) + amount));
-  return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, '0')}`;
 }
 
 const GarmentCanvas = ({ garment, color: garmentColor, view, images }: GarmentCanvasProps) => {
@@ -265,14 +269,15 @@ const GarmentCanvas = ({ garment, color: garmentColor, view, images }: GarmentCa
     const w = canvas.width;
     const h = canvas.height;
 
-    // Draw the garment
     drawGarment(ctx, garment.id, garmentColor, view, w, h);
 
-    // Draw zone indicators
+    // Draw images and zone indicators
     const zones = getZones(garment.id, view);
     const visibleZones = view === 'front'
       ? garment.zones.filter(z => z !== 'back')
       : garment.zones.filter(z => z === 'back' || z === 'left-sleeve' || z === 'right-sleeve');
+
+    const imageLoadPromises: Promise<void>[] = [];
 
     visibleZones.forEach(zone => {
       const pos = zones[zone];
@@ -281,16 +286,20 @@ const GarmentCanvas = ({ garment, color: garmentColor, view, images }: GarmentCa
 
       const placedImage = images.find(i => i.zone === zone);
       if (placedImage) {
-        const img = new Image();
-        img.onload = () => {
-          ctx.save();
-          ctx.globalAlpha = 0.9;
-          ctx.drawImage(img, rx * w, ry * h, rw * w, rh * h);
-          ctx.restore();
-        };
-        img.src = placedImage.dataUrl;
+        const promise = new Promise<void>((resolve) => {
+          const img = new Image();
+          img.onload = () => {
+            ctx.save();
+            ctx.globalAlpha = 0.9;
+            ctx.drawImage(img, rx * w, ry * h, rw * w, rh * h);
+            ctx.restore();
+            resolve();
+          };
+          img.onerror = () => resolve();
+          img.src = placedImage.dataUrl;
+        });
+        imageLoadPromises.push(promise);
       } else {
-        // Draw zone outline
         ctx.save();
         ctx.setLineDash([4, 4]);
         ctx.strokeStyle = 'rgba(255,255,255,0.4)';
@@ -298,13 +307,11 @@ const GarmentCanvas = ({ garment, color: garmentColor, view, images }: GarmentCa
         ctx.strokeRect(rx * w, ry * h, rw * w, rh * h);
         ctx.restore();
 
-        // Zone label
         ctx.save();
         ctx.fillStyle = 'rgba(255,255,255,0.5)';
-        ctx.font = '10px Inter';
+        ctx.font = '10px Inter, sans-serif';
         ctx.textAlign = 'center';
-        const label = zone.replace('-', ' ');
-        ctx.fillText(label, (rx + rw / 2) * w, (ry + rh / 2) * h + 4);
+        ctx.fillText(zone.replace('-', ' '), (rx + rw / 2) * w, (ry + rh / 2) * h + 4);
         ctx.restore();
       }
     });
@@ -317,7 +324,6 @@ const GarmentCanvas = ({ garment, color: garmentColor, view, images }: GarmentCa
         width={400}
         height={500}
         className="max-w-full h-auto"
-        style={{ imageRendering: 'auto' }}
       />
     </div>
   );
