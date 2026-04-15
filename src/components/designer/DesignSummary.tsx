@@ -1,20 +1,20 @@
 import type { GarmentConfig, Size, Material } from '@/lib/garments';
-import type { PlacedImage, PriceBreakdown } from '@/lib/pricing';
+import type { PriceBreakdown } from '@/lib/pricing';
 import type { FabricCanvasHandle } from './FabricCanvas';
 import PriceDisplay from './PriceDisplay';
 import { MATERIALS } from '@/lib/garments';
 import { useToast } from '@/hooks/use-toast';
-import type { RefObject } from 'react';
+import type { MutableRefObject } from 'react';
 
 interface DesignSummaryProps {
   garment: GarmentConfig;
   color: string;
   size: Size;
   material: Material;
-  images: PlacedImage[];
+  images: any[];
   price: PriceBreakdown;
   onBack: () => void;
-  canvasRef?: RefObject<FabricCanvasHandle | null>;
+  canvasRef?: MutableRefObject<FabricCanvasHandle | null>;
 }
 
 const DesignSummary = ({ garment, color, size, material, price, onBack, canvasRef }: DesignSummaryProps) => {
