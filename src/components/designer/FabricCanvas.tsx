@@ -3,6 +3,7 @@ import { fabric } from 'fabric';
 import type { GarmentConfig, GarmentType, PlacementZone } from '@/lib/garments';
 import type { TextStyle } from '@/lib/designState';
 import { UndoRedoManager } from '@/lib/designState';
+import { ZoomIn, ZoomOut, Maximize, Move } from 'lucide-react';
 
 import tshirtFront from '@/assets/garments/tshirt-front.png';
 import tshirtBack from '@/assets/garments/tshirt-back.png';
@@ -84,6 +85,9 @@ interface FabricCanvasProps {
 }
 
 const CANVAS_W = 512;
+const MIN_ZOOM = 0.3;
+const MAX_ZOOM = 3;
+const ZOOM_STEP = 0.1;
 
 const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
   ({ garment, color, view, onSelectionChange, onElementsChange }, ref) => {
@@ -92,7 +96,11 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
     const undoMgr = useRef(new UndoRedoManager());
     const [, forceRender] = useState(0);
     const isLoadingRef = useRef(false);
+    const isPanningRef = useRef(false);
+    const lastPanPosRef = useRef<{ x: number; y: number } | null>(null);
+    const [zoomLevel, setZoomLevel] = useState(1);
     const canvasH = garment.id === 'cap' ? 512 : 640;
+    const wrapperRef = useRef<HTMLDivElement>(null);
 
     // Initialize fabric canvas
     useEffect(() => {
@@ -116,9 +124,77 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
         if (!isLoadingRef.current) saveState(fc);
       });
 
+      // Mouse wheel zoom
+      fc.on('mouse:wheel', (opt) => {
+        const e = opt.e as WheelEvent;
+        e.preventDefault();
+        e.stopPropagation();
+        const delta = -e.deltaY / 300;
+        let newZoom = fc.getZoom() + delta;
+        newZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, newZoom));
+        fc.zoomToPoint(new fabric.Point(e.offsetX, e.offsetY), newZoom);
+        setZoomLevel(newZoom);
+      });
+
+      // Pan: mouse down on empty area
+      fc.on('mouse:down', (opt) => {
+        const e = opt.e as MouseEvent;
+        // Only pan if Alt key held or no object under cursor
+        if (e.altKey || !fc.findTarget(opt.e as any)) {
+          isPanningRef.current = true;
+          lastPanPosRef.current = { x: e.clientX, y: e.clientY };
+          fc.selection = false;
+          fc.setCursor('grabbing');
+          fc.renderAll();
+        }
+      });
+
+      fc.on('mouse:move', (opt) => {
+        if (!isPanningRef.current || !lastPanPosRef.current) return;
+        const e = opt.e as MouseEvent;
+        const dx = e.clientX - lastPanPosRef.current.x;
+        const dy = e.clientY - lastPanPosRef.current.y;
+        fc.relativePan(new fabric.Point(dx, dy));
+        lastPanPosRef.current = { x: e.clientX, y: e.clientY };
+        fc.setCursor('grabbing');
+      });
+
+      fc.on('mouse:up', () => {
+        if (isPanningRef.current) {
+          isPanningRef.current = false;
+          lastPanPosRef.current = null;
+          fc.selection = true;
+          fc.setCursor('default');
+        }
+      });
+
+      // Cursor hints
+      fc.on('mouse:over', (opt) => {
+        if (opt.target) {
+          fc.setCursor('move');
+        }
+      });
+
       return () => { fc.dispose(); fcRef.current = null; };
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [canvasH]);
+
+    // Keyboard panning
+    useEffect(() => {
+      const handleKeyDown = (e: KeyboardEvent) => {
+        const fc = fcRef.current;
+        if (!fc) return;
+        const PAN_STEP = 20;
+        switch (e.key) {
+          case 'ArrowLeft': fc.relativePan(new fabric.Point(PAN_STEP, 0)); e.preventDefault(); break;
+          case 'ArrowRight': fc.relativePan(new fabric.Point(-PAN_STEP, 0)); e.preventDefault(); break;
+          case 'ArrowUp': fc.relativePan(new fabric.Point(0, PAN_STEP)); e.preventDefault(); break;
+          case 'ArrowDown': fc.relativePan(new fabric.Point(0, -PAN_STEP)); e.preventDefault(); break;
+        }
+      };
+      window.addEventListener('keydown', handleKeyDown);
+      return () => window.removeEventListener('keydown', handleKeyDown);
+    }, []);
 
     const notifySelection = useCallback((fc: fabric.Canvas) => {
       const obj = fc.getActiveObject();
@@ -136,6 +212,31 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
       forceRender(n => n + 1);
     }, [onElementsChange]);
 
+    // Zoom helpers
+    const handleZoomIn = () => {
+      const fc = fcRef.current;
+      if (!fc) return;
+      const newZoom = Math.min(MAX_ZOOM, fc.getZoom() + ZOOM_STEP);
+      fc.zoomToPoint(new fabric.Point(CANVAS_W / 2, canvasH / 2), newZoom);
+      setZoomLevel(newZoom);
+    };
+
+    const handleZoomOut = () => {
+      const fc = fcRef.current;
+      if (!fc) return;
+      const newZoom = Math.max(MIN_ZOOM, fc.getZoom() - ZOOM_STEP);
+      fc.zoomToPoint(new fabric.Point(CANVAS_W / 2, canvasH / 2), newZoom);
+      setZoomLevel(newZoom);
+    };
+
+    const handleResetView = () => {
+      const fc = fcRef.current;
+      if (!fc) return;
+      fc.setViewportTransform([1, 0, 0, 1, 0, 0]);
+      setZoomLevel(1);
+      fc.renderAll();
+    };
+
     // Update background when garment/color/view changes
     useEffect(() => {
       const fc = fcRef.current;
@@ -143,7 +244,6 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
       const imgSrc = GARMENT_IMAGES[garment.id]?.[view];
       if (!imgSrc) return;
 
-      // Pre-render tinted garment on offscreen canvas
       const offscreen = document.createElement('canvas');
       offscreen.width = CANVAS_W;
       offscreen.height = canvasH;
@@ -166,7 +266,6 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
           octx.restore();
         }
 
-        // Draw zone outlines
         const zones = ZONE_MAPS[garment.id]?.[view] ?? {};
         Object.entries(zones).forEach(([zone, pos]) => {
           if (!pos) return;
@@ -388,9 +487,15 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
       exportPNG(): string | null {
         const fc = fcRef.current;
         if (!fc) return null;
+        // Reset viewport for clean export
+        const vpt = fc.viewportTransform?.slice() as number[] | undefined;
+        fc.setViewportTransform([1, 0, 0, 1, 0, 0]);
         fc.discardActiveObject();
         fc.renderAll();
-        return fc.toDataURL({ format: 'png', multiplier: 2 });
+        const data = fc.toDataURL({ format: 'png', multiplier: 2 });
+        if (vpt) fc.setViewportTransform(vpt as any);
+        fc.renderAll();
+        return data;
       },
 
       getDesignJSON(): string {
@@ -423,22 +528,145 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
       },
 
       hasBackPrint(): boolean {
-        // Check if any object is placed in the back zone area
         return view === 'back' && (fcRef.current?.getObjects().length ?? 0) > 0;
       },
     }), [garment.id, view, canvasH, saveState, onSelectionChange, onElementsChange]);
 
+    // Minimap data
+    const minimapSize = 80;
+    const showMinimap = zoomLevel > 1.05;
+
     return (
-      <div className="flex items-center justify-center bg-muted/30 rounded-lg p-4">
-        <canvas
-          ref={canvasElRef}
-          className="max-w-full h-auto max-h-[500px]"
-          style={{ border: '1px solid hsl(var(--border) / 0.3)', borderRadius: '8px' }}
-        />
+      <div className="relative" ref={wrapperRef}>
+        {/* Zoom controls bar */}
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-1">
+            <button
+              onClick={handleZoomOut}
+              disabled={zoomLevel <= MIN_ZOOM}
+              className="p-1.5 rounded-md bg-secondary text-secondary-foreground hover:bg-secondary/80 disabled:opacity-30 transition-all"
+              title="Zoom Out"
+            >
+              <ZoomOut className="w-4 h-4" />
+            </button>
+            <span className="text-xs font-medium text-muted-foreground w-14 text-center tabular-nums">
+              {Math.round(zoomLevel * 100)}%
+            </span>
+            <button
+              onClick={handleZoomIn}
+              disabled={zoomLevel >= MAX_ZOOM}
+              className="p-1.5 rounded-md bg-secondary text-secondary-foreground hover:bg-secondary/80 disabled:opacity-30 transition-all"
+              title="Zoom In"
+            >
+              <ZoomIn className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+              <Move className="w-3 h-3" /> Alt+drag or scroll empty area to pan
+            </span>
+            <button
+              onClick={handleResetView}
+              className="px-2.5 py-1.5 rounded-md bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-all text-xs font-medium flex items-center gap-1"
+              title="Reset Camera"
+            >
+              <Maximize className="w-3.5 h-3.5" />
+              Reset
+            </button>
+          </div>
+        </div>
+
+        {/* Canvas area */}
+        <div className="flex items-center justify-center bg-muted/30 rounded-lg p-4 overflow-hidden relative">
+          <canvas
+            ref={canvasElRef}
+            className="max-w-full h-auto max-h-[500px]"
+            style={{ border: '1px solid hsl(var(--border) / 0.3)', borderRadius: '8px' }}
+          />
+
+          {/* Minimap */}
+          {showMinimap && (
+            <div
+              className="absolute bottom-6 right-6 border border-border/50 rounded-md bg-background/80 backdrop-blur-sm overflow-hidden shadow-lg"
+              style={{ width: minimapSize, height: minimapSize * (canvasH / CANVAS_W) }}
+            >
+              <MiniMap
+                canvasRef={fcRef}
+                canvasW={CANVAS_W}
+                canvasH={canvasH}
+                size={minimapSize}
+                zoom={zoomLevel}
+              />
+            </div>
+          )}
+        </div>
       </div>
     );
   }
 );
+
+// Minimap component
+function MiniMap({
+  canvasRef,
+  canvasW,
+  canvasH,
+  size,
+  zoom,
+}: {
+  canvasRef: React.MutableRefObject<fabric.Canvas | null>;
+  canvasW: number;
+  canvasH: number;
+  size: number;
+  zoom: number;
+}) {
+  const miniRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const draw = () => {
+      const fc = canvasRef.current;
+      const ctx = miniRef.current?.getContext('2d');
+      if (!fc || !ctx) return;
+
+      const ratio = size / canvasW;
+      const h = canvasH * ratio;
+      ctx.clearRect(0, 0, size, h);
+
+      // Draw garment thumbnail
+      ctx.fillStyle = 'hsl(var(--muted))';
+      ctx.fillRect(0, 0, size, h);
+
+      // Viewport rectangle
+      const vpt = fc.viewportTransform;
+      if (vpt) {
+        const vpLeft = -vpt[4] / vpt[0];
+        const vpTop = -vpt[5] / vpt[3];
+        const vpWidth = canvasW / vpt[0];
+        const vpHeight = canvasH / vpt[3];
+
+        ctx.strokeStyle = 'hsl(var(--primary))';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(
+          vpLeft * ratio,
+          vpTop * ratio,
+          vpWidth * ratio,
+          vpHeight * ratio
+        );
+      }
+    };
+    draw();
+    const interval = setInterval(draw, 200);
+    return () => clearInterval(interval);
+  }, [canvasRef, canvasW, canvasH, size, zoom]);
+
+  return (
+    <canvas
+      ref={miniRef}
+      width={size}
+      height={size * (canvasH / canvasW)}
+      className="w-full h-full"
+    />
+  );
+}
 
 FabricCanvas.displayName = 'FabricCanvas';
 export default FabricCanvas;
