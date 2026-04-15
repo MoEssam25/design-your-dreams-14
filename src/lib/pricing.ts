@@ -12,6 +12,7 @@ export interface PriceBreakdown {
   materialExtra: number;
   imageExtra: number;
   backPrintExtra: number;
+  textExtra: number;
   total: number;
 }
 
@@ -19,16 +20,19 @@ export function calculatePrice(
   garment: GarmentConfig,
   size: Size,
   material: Material,
-  images: PlacedImage[]
+  imageCount: number,
+  textCount: number,
+  hasBackPrint: boolean
 ): PriceBreakdown {
   const base = garment.basePrice;
   const sizeExtra = (size === 'XL' || size === 'XXL') ? 3 : 0;
   const mat = MATERIALS.find(m => m.id === material);
   const materialExtra = mat?.priceExtra ?? 0;
-  const additionalImages = Math.max(0, images.length - 1);
+  const additionalImages = Math.max(0, imageCount - 1);
   const imageExtra = additionalImages * 2;
-  const hasBackPrint = images.some(img => img.zone === 'back');
   const backPrintExtra = hasBackPrint ? 2 : 0;
+  const additionalTexts = Math.max(0, textCount - 1);
+  const textExtra = additionalTexts * 2;
 
   return {
     base,
@@ -36,6 +40,7 @@ export function calculatePrice(
     materialExtra,
     imageExtra,
     backPrintExtra,
-    total: base + sizeExtra + materialExtra + imageExtra + backPrintExtra,
+    textExtra,
+    total: base + sizeExtra + materialExtra + imageExtra + backPrintExtra + textExtra,
   };
 }
