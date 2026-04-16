@@ -3,7 +3,7 @@ import { fabric } from 'fabric';
 import type { GarmentConfig, GarmentType, PlacementZone } from '@/lib/garments';
 import type { TextStyle } from '@/lib/designState';
 import { UndoRedoManager } from '@/lib/designState';
-import { ZoomIn, ZoomOut, Maximize, Move } from 'lucide-react';
+import { ZoomIn, ZoomOut, Maximize, Move, RefreshCw } from 'lucide-react';
 
 import tshirtFront from '@/assets/garments/tshirt-front.png';
 import tshirtBack from '@/assets/garments/tshirt-back.png';
@@ -74,6 +74,7 @@ export interface FabricCanvasHandle {
   getImageCount: () => number;
   getTextCount: () => number;
   hasBackPrint: () => boolean;
+  refreshPreview: () => void;
 }
 
 interface FabricCanvasProps {
@@ -85,6 +86,7 @@ interface FabricCanvasProps {
 }
 
 const CANVAS_W = 512;
+const CANVAS_H = 640; // Fixed height — cap uses same, just renders differently
 const MIN_ZOOM = 0.3;
 const MAX_ZOOM = 3;
 const ZOOM_STEP = 0.1;
@@ -99,29 +101,69 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
     const isPanningRef = useRef(false);
     const lastPanPosRef = useRef<{ x: number; y: number } | null>(null);
     const [zoomLevel, setZoomLevel] = useState(1);
-    const canvasH = garment.id === 'cap' ? 512 : 640;
     const wrapperRef = useRef<HTMLDivElement>(null);
+    // Store latest props in refs so callbacks don't go stale
+    const garmentRef = useRef(garment);
+    const colorRef = useRef(color);
+    const viewRef = useRef(view);
+    const onSelectionChangeRef = useRef(onSelectionChange);
+    const onElementsChangeRef = useRef(onElementsChange);
+    garmentRef.current = garment;
+    colorRef.current = color;
+    viewRef.current = view;
+    onSelectionChangeRef.current = onSelectionChange;
+    onElementsChangeRef.current = onElementsChange;
 
-    // Initialize fabric canvas
+    const bgLoadCounterRef = useRef(0);
+
+    // Initialize fabric canvas ONCE — never re-create
     useEffect(() => {
-      if (!canvasElRef.current) return;
+      if (!canvasElRef.current || fcRef.current) return;
       const fc = new fabric.Canvas(canvasElRef.current, {
         width: CANVAS_W,
-        height: canvasH,
+        height: CANVAS_H,
         selection: true,
         preserveObjectStacking: true,
       });
       fcRef.current = fc;
 
-      fc.on('selection:created', () => notifySelection(fc));
-      fc.on('selection:updated', () => notifySelection(fc));
-      fc.on('selection:cleared', () => onSelectionChange?.(null));
-      fc.on('object:modified', () => saveState(fc));
+      fc.on('selection:created', () => {
+        const obj = fc.getActiveObject();
+        if (!obj) { onSelectionChangeRef.current?.(null); return; }
+        onSelectionChangeRef.current?.({
+          id: (obj as any)._designId ?? '',
+          type: obj.type === 'textbox' ? 'text' : 'image',
+          label: obj.type === 'textbox' ? (obj as fabric.Textbox).text?.slice(0, 20) ?? 'Text' : 'Image',
+        });
+      });
+      fc.on('selection:updated', () => {
+        const obj = fc.getActiveObject();
+        if (!obj) { onSelectionChangeRef.current?.(null); return; }
+        onSelectionChangeRef.current?.({
+          id: (obj as any)._designId ?? '',
+          type: obj.type === 'textbox' ? 'text' : 'image',
+          label: obj.type === 'textbox' ? (obj as fabric.Textbox).text?.slice(0, 20) ?? 'Text' : 'Image',
+        });
+      });
+      fc.on('selection:cleared', () => onSelectionChangeRef.current?.(null));
+      fc.on('object:modified', () => {
+        undoMgr.current.save(JSON.stringify(fc.toJSON(['_designId', '_designType'])));
+        onElementsChangeRef.current?.();
+        forceRender(n => n + 1);
+      });
       fc.on('object:added', () => {
-        if (!isLoadingRef.current) saveState(fc);
+        if (!isLoadingRef.current) {
+          undoMgr.current.save(JSON.stringify(fc.toJSON(['_designId', '_designType'])));
+          onElementsChangeRef.current?.();
+          forceRender(n => n + 1);
+        }
       });
       fc.on('object:removed', () => {
-        if (!isLoadingRef.current) saveState(fc);
+        if (!isLoadingRef.current) {
+          undoMgr.current.save(JSON.stringify(fc.toJSON(['_designId', '_designType'])));
+          onElementsChangeRef.current?.();
+          forceRender(n => n + 1);
+        }
       });
 
       // Mouse wheel zoom
@@ -136,10 +178,9 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
         setZoomLevel(newZoom);
       });
 
-      // Pan: mouse down on empty area
+      // Pan
       fc.on('mouse:down', (opt) => {
         const e = opt.e as MouseEvent;
-        // Only pan if Alt key held or no object under cursor
         if (e.altKey || !fc.findTarget(opt.e as any)) {
           isPanningRef.current = true;
           lastPanPosRef.current = { x: e.clientX, y: e.clientY };
@@ -148,7 +189,6 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
           fc.renderAll();
         }
       });
-
       fc.on('mouse:move', (opt) => {
         if (!isPanningRef.current || !lastPanPosRef.current) return;
         const e = opt.e as MouseEvent;
@@ -158,7 +198,6 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
         lastPanPosRef.current = { x: e.clientX, y: e.clientY };
         fc.setCursor('grabbing');
       });
-
       fc.on('mouse:up', () => {
         if (isPanningRef.current) {
           isPanningRef.current = false;
@@ -167,17 +206,12 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
           fc.setCursor('default');
         }
       });
-
-      // Cursor hints
       fc.on('mouse:over', (opt) => {
-        if (opt.target) {
-          fc.setCursor('move');
-        }
+        if (opt.target) fc.setCursor('move');
       });
 
       return () => { fc.dispose(); fcRef.current = null; };
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [canvasH]);
+    }, []); // Empty deps — initialize ONCE
 
     // Keyboard panning
     useEffect(() => {
@@ -196,28 +230,98 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
       return () => window.removeEventListener('keydown', handleKeyDown);
     }, []);
 
-    const notifySelection = useCallback((fc: fabric.Canvas) => {
-      const obj = fc.getActiveObject();
-      if (!obj) { onSelectionChange?.(null); return; }
-      onSelectionChange?.({
-        id: (obj as any)._designId ?? '',
-        type: obj.type === 'textbox' ? 'text' : 'image',
-        label: obj.type === 'textbox' ? (obj as fabric.Textbox).text?.slice(0, 20) ?? 'Text' : 'Image',
-      });
-    }, [onSelectionChange]);
+    // Load background when garment/color/view changes — uses counter to cancel stale loads
+    const loadBackground = useCallback(() => {
+      const fc = fcRef.current;
+      if (!fc) return;
+      const g = garmentRef.current;
+      const c = colorRef.current;
+      const v = viewRef.current;
+      const imgSrc = GARMENT_IMAGES[g.id]?.[v];
+      if (!imgSrc) return;
 
-    const saveState = useCallback((fc: fabric.Canvas) => {
-      undoMgr.current.save(JSON.stringify(fc.toJSON(['_designId', '_designType'])));
-      onElementsChange?.();
-      forceRender(n => n + 1);
-    }, [onElementsChange]);
+      bgLoadCounterRef.current += 1;
+      const myLoad = bgLoadCounterRef.current;
 
-    // Zoom helpers
+      const offscreen = document.createElement('canvas');
+      offscreen.width = CANVAS_W;
+      offscreen.height = CANVAS_H;
+      const octx = offscreen.getContext('2d')!;
+
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        // Abort if a newer load has started
+        if (bgLoadCounterRef.current !== myLoad) return;
+
+        octx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+        octx.drawImage(img, 0, 0, CANVAS_W, CANVAS_H);
+        if (c !== '#ffffff') {
+          octx.save();
+          octx.globalCompositeOperation = 'multiply';
+          octx.fillStyle = c;
+          octx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+          octx.restore();
+          octx.save();
+          octx.globalCompositeOperation = 'destination-in';
+          octx.drawImage(img, 0, 0, CANVAS_W, CANVAS_H);
+          octx.restore();
+        }
+
+        const zones = ZONE_MAPS[g.id]?.[v] ?? {};
+        Object.entries(zones).forEach(([zone, pos]) => {
+          if (!pos) return;
+          const [rx, ry, rw, rh] = pos;
+          octx.save();
+          octx.setLineDash([6, 4]);
+          octx.strokeStyle = 'rgba(255, 180, 50, 0.5)';
+          octx.lineWidth = 1.5;
+          octx.strokeRect(rx * CANVAS_W, ry * CANVAS_H, rw * CANVAS_W, rh * CANVAS_H);
+          octx.fillStyle = 'rgba(255, 180, 50, 0.6)';
+          octx.font = 'bold 10px Inter, sans-serif';
+          octx.textAlign = 'center';
+          octx.textBaseline = 'middle';
+          const label = zone === 'chest' ? 'CHEST' : zone === 'back' ? 'BACK' : zone === 'left-sleeve' ? 'L.SLEEVE' : 'R.SLEEVE';
+          octx.fillText(label, (rx + rw / 2) * CANVAS_W, (ry + rh / 2) * CANVAS_H);
+          octx.restore();
+        });
+
+        const dataUrl = offscreen.toDataURL();
+        fc.setBackgroundImage(dataUrl, () => fc.renderAll(), {
+          originX: 'left', originY: 'top',
+          scaleX: 1, scaleY: 1,
+        });
+      };
+      img.onerror = () => {
+        // Retry once on error
+        if (bgLoadCounterRef.current === myLoad) {
+          setTimeout(() => {
+            if (bgLoadCounterRef.current === myLoad) {
+              img.src = imgSrc;
+            }
+          }, 500);
+        }
+      };
+      img.src = imgSrc;
+    }, []);
+
+    useEffect(() => {
+      loadBackground();
+    }, [garment.id, color, view, loadBackground]);
+
+    // Also re-render periodically to keep canvas alive (prevents GC issues)
+    useEffect(() => {
+      const interval = setInterval(() => {
+        fcRef.current?.renderAll();
+      }, 5000);
+      return () => clearInterval(interval);
+    }, []);
+
     const handleZoomIn = () => {
       const fc = fcRef.current;
       if (!fc) return;
       const newZoom = Math.min(MAX_ZOOM, fc.getZoom() + ZOOM_STEP);
-      fc.zoomToPoint(new fabric.Point(CANVAS_W / 2, canvasH / 2), newZoom);
+      fc.zoomToPoint(new fabric.Point(CANVAS_W / 2, CANVAS_H / 2), newZoom);
       setZoomLevel(newZoom);
     };
 
@@ -225,7 +329,7 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
       const fc = fcRef.current;
       if (!fc) return;
       const newZoom = Math.max(MIN_ZOOM, fc.getZoom() - ZOOM_STEP);
-      fc.zoomToPoint(new fabric.Point(CANVAS_W / 2, canvasH / 2), newZoom);
+      fc.zoomToPoint(new fabric.Point(CANVAS_W / 2, CANVAS_H / 2), newZoom);
       setZoomLevel(newZoom);
     };
 
@@ -237,84 +341,28 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
       fc.renderAll();
     };
 
-    // Update background when garment/color/view changes
-    useEffect(() => {
-      const fc = fcRef.current;
-      if (!fc) return;
-      const imgSrc = GARMENT_IMAGES[garment.id]?.[view];
-      if (!imgSrc) return;
-
-      const offscreen = document.createElement('canvas');
-      offscreen.width = CANVAS_W;
-      offscreen.height = canvasH;
-      const octx = offscreen.getContext('2d')!;
-
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = () => {
-        octx.clearRect(0, 0, CANVAS_W, canvasH);
-        octx.drawImage(img, 0, 0, CANVAS_W, canvasH);
-        if (color !== '#ffffff') {
-          octx.save();
-          octx.globalCompositeOperation = 'multiply';
-          octx.fillStyle = color;
-          octx.fillRect(0, 0, CANVAS_W, canvasH);
-          octx.restore();
-          octx.save();
-          octx.globalCompositeOperation = 'destination-in';
-          octx.drawImage(img, 0, 0, CANVAS_W, canvasH);
-          octx.restore();
-        }
-
-        const zones = ZONE_MAPS[garment.id]?.[view] ?? {};
-        Object.entries(zones).forEach(([zone, pos]) => {
-          if (!pos) return;
-          const [rx, ry, rw, rh] = pos;
-          octx.save();
-          octx.setLineDash([6, 4]);
-          octx.strokeStyle = 'rgba(255, 180, 50, 0.5)';
-          octx.lineWidth = 1.5;
-          octx.strokeRect(rx * CANVAS_W, ry * canvasH, rw * CANVAS_W, rh * canvasH);
-          octx.fillStyle = 'rgba(255, 180, 50, 0.6)';
-          octx.font = 'bold 10px Inter, sans-serif';
-          octx.textAlign = 'center';
-          octx.textBaseline = 'middle';
-          const label = zone === 'chest' ? 'CHEST' : zone === 'back' ? 'BACK' : zone === 'left-sleeve' ? 'L.SLEEVE' : 'R.SLEEVE';
-          octx.fillText(label, (rx + rw / 2) * CANVAS_W, (ry + rh / 2) * canvasH);
-          octx.restore();
-        });
-
-        const dataUrl = offscreen.toDataURL();
-        fc.setBackgroundImage(dataUrl, () => fc.renderAll(), {
-          originX: 'left', originY: 'top',
-          scaleX: 1, scaleY: 1,
-        });
-      };
-      img.src = imgSrc;
-    }, [garment.id, color, view, canvasH]);
-
     useImperativeHandle(ref, () => ({
       addImage(dataUrl: string, zone?: PlacementZone) {
         const fc = fcRef.current;
         if (!fc) return;
         fabric.Image.fromURL(dataUrl, (img) => {
-          const zones = ZONE_MAPS[garment.id]?.[view] ?? {};
+          const zones = ZONE_MAPS[garmentRef.current.id]?.[viewRef.current] ?? {};
           const zoneKey = zone ?? 'chest';
           const pos = zones[zoneKey];
           const maxW = pos ? pos[2] * CANVAS_W : 150;
-          const maxH = pos ? pos[3] * canvasH : 150;
+          const maxH = pos ? pos[3] * CANVAS_H : 150;
           const scale = Math.min(maxW / (img.width || 150), maxH / (img.height || 150));
           img.set({
             left: pos ? pos[0] * CANVAS_W + (pos[2] * CANVAS_W) / 2 : CANVAS_W / 2,
-            top: pos ? pos[1] * canvasH + (pos[3] * canvasH) / 2 : canvasH / 2,
+            top: pos ? pos[1] * CANVAS_H + (pos[3] * CANVAS_H) / 2 : CANVAS_H / 2,
             scaleX: scale,
             scaleY: scale,
             originX: 'center',
             originY: 'center',
             cornerStyle: 'circle',
-            cornerColor: 'hsl(var(--primary))',
+            cornerColor: 'hsl(35, 100%, 55%)',
             transparentCorners: false,
-            borderColor: 'hsl(var(--primary))',
+            borderColor: 'hsl(35, 100%, 55%)',
           });
           (img as any)._designId = `img_${Date.now()}`;
           (img as any)._designType = 'image';
@@ -329,7 +377,7 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
         if (!fc) return;
         const tb = new fabric.Textbox(text, {
           left: CANVAS_W / 2,
-          top: canvasH / 2,
+          top: CANVAS_H / 2,
           originX: 'center',
           originY: 'center',
           width: 200,
@@ -343,10 +391,10 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
           lineHeight: style.lineHeight,
           textAlign: 'center',
           cornerStyle: 'circle',
-          cornerColor: 'hsl(var(--primary))',
+          cornerColor: 'hsl(35, 100%, 55%)',
           transparentCorners: false,
-          borderColor: 'hsl(var(--primary))',
-          editingBorderColor: 'hsl(var(--primary))',
+          borderColor: 'hsl(35, 100%, 55%)',
+          editingBorderColor: 'hsl(35, 100%, 55%)',
         });
         if (style.shadow.enabled) {
           tb.set('shadow', new fabric.Shadow({
@@ -408,7 +456,9 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
           tb.set('textBackgroundColor', op > 0 ? bg : '');
         }
         fc.renderAll();
-        saveState(fc);
+        undoMgr.current.save(JSON.stringify(fc.toJSON(['_designId', '_designType'])));
+        onElementsChangeRef.current?.();
+        forceRender(n => n + 1);
       },
 
       deleteSelected() {
@@ -422,14 +472,24 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
         const fc = fcRef.current;
         if (!fc) return;
         const obj = fc.getActiveObject();
-        if (obj) { fc.bringForward(obj); fc.renderAll(); saveState(fc); }
+        if (obj) {
+          fc.bringForward(obj); fc.renderAll();
+          undoMgr.current.save(JSON.stringify(fc.toJSON(['_designId', '_designType'])));
+          onElementsChangeRef.current?.();
+          forceRender(n => n + 1);
+        }
       },
 
       sendBackward() {
         const fc = fcRef.current;
         if (!fc) return;
         const obj = fc.getActiveObject();
-        if (obj) { fc.sendBackwards(obj); fc.renderAll(); saveState(fc); }
+        if (obj) {
+          fc.sendBackwards(obj); fc.renderAll();
+          undoMgr.current.save(JSON.stringify(fc.toJSON(['_designId', '_designType'])));
+          onElementsChangeRef.current?.();
+          forceRender(n => n + 1);
+        }
       },
 
       undo() {
@@ -441,7 +501,7 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
           fc.loadFromJSON(state, () => {
             fc.renderAll();
             isLoadingRef.current = false;
-            onElementsChange?.();
+            onElementsChangeRef.current?.();
             forceRender(n => n + 1);
           });
         }
@@ -456,7 +516,7 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
           fc.loadFromJSON(state, () => {
             fc.renderAll();
             isLoadingRef.current = false;
-            onElementsChange?.();
+            onElementsChangeRef.current?.();
             forceRender(n => n + 1);
           });
         }
@@ -487,7 +547,6 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
       exportPNG(): string | null {
         const fc = fcRef.current;
         if (!fc) return null;
-        // Reset viewport for clean export
         const vpt = fc.viewportTransform?.slice() as number[] | undefined;
         fc.setViewportTransform([1, 0, 0, 1, 0, 0]);
         fc.discardActiveObject();
@@ -511,7 +570,7 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
         fc.loadFromJSON(json, () => {
           fc.renderAll();
           isLoadingRef.current = false;
-          onElementsChange?.();
+          onElementsChangeRef.current?.();
         });
       },
 
@@ -528,48 +587,46 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
       },
 
       hasBackPrint(): boolean {
-        return view === 'back' && (fcRef.current?.getObjects().length ?? 0) > 0;
+        return viewRef.current === 'back' && (fcRef.current?.getObjects().length ?? 0) > 0;
       },
-    }), [garment.id, view, canvasH, saveState, onSelectionChange, onElementsChange]);
 
-    // Minimap data
-    const minimapSize = 80;
+      refreshPreview() {
+        loadBackground();
+      },
+    }), [loadBackground]);
+
     const showMinimap = zoomLevel > 1.05;
+    const minimapSize = 80;
 
     return (
       <div className="relative" ref={wrapperRef}>
         {/* Zoom controls bar */}
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-1">
-            <button
-              onClick={handleZoomOut}
-              disabled={zoomLevel <= MIN_ZOOM}
-              className="p-1.5 rounded-md bg-secondary text-secondary-foreground hover:bg-secondary/80 disabled:opacity-30 transition-all"
-              title="Zoom Out"
-            >
+            <button onClick={handleZoomOut} disabled={zoomLevel <= MIN_ZOOM}
+              className="p-1.5 rounded-md bg-secondary text-secondary-foreground hover:bg-secondary/80 disabled:opacity-30 transition-all" title="Zoom Out">
               <ZoomOut className="w-4 h-4" />
             </button>
             <span className="text-xs font-medium text-muted-foreground w-14 text-center tabular-nums">
               {Math.round(zoomLevel * 100)}%
             </span>
-            <button
-              onClick={handleZoomIn}
-              disabled={zoomLevel >= MAX_ZOOM}
-              className="p-1.5 rounded-md bg-secondary text-secondary-foreground hover:bg-secondary/80 disabled:opacity-30 transition-all"
-              title="Zoom In"
-            >
+            <button onClick={handleZoomIn} disabled={zoomLevel >= MAX_ZOOM}
+              className="p-1.5 rounded-md bg-secondary text-secondary-foreground hover:bg-secondary/80 disabled:opacity-30 transition-all" title="Zoom In">
               <ZoomIn className="w-4 h-4" />
             </button>
           </div>
           <div className="flex items-center gap-1.5">
             <span className="text-[10px] text-muted-foreground flex items-center gap-1">
-              <Move className="w-3 h-3" /> Alt+drag or scroll empty area to pan
+              <Move className="w-3 h-3" /> Alt+drag to pan
             </span>
-            <button
-              onClick={handleResetView}
+            <button onClick={() => loadBackground()}
+              className="px-2 py-1.5 rounded-md bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-all text-xs font-medium flex items-center gap-1"
+              title="Refresh Preview">
+              <RefreshCw className="w-3.5 h-3.5" />
+            </button>
+            <button onClick={handleResetView}
               className="px-2.5 py-1.5 rounded-md bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-all text-xs font-medium flex items-center gap-1"
-              title="Reset Camera"
-            >
+              title="Reset Camera">
               <Maximize className="w-3.5 h-3.5" />
               Reset
             </button>
@@ -584,19 +641,12 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
             style={{ border: '1px solid hsl(var(--border) / 0.3)', borderRadius: '8px' }}
           />
 
-          {/* Minimap */}
           {showMinimap && (
             <div
               className="absolute bottom-6 right-6 border border-border/50 rounded-md bg-background/80 backdrop-blur-sm overflow-hidden shadow-lg"
-              style={{ width: minimapSize, height: minimapSize * (canvasH / CANVAS_W) }}
+              style={{ width: minimapSize, height: minimapSize * (CANVAS_H / CANVAS_W) }}
             >
-              <MiniMap
-                canvasRef={fcRef}
-                canvasW={CANVAS_W}
-                canvasH={canvasH}
-                size={minimapSize}
-                zoom={zoomLevel}
-              />
+              <MiniMap canvasRef={fcRef} canvasW={CANVAS_W} canvasH={CANVAS_H} size={minimapSize} zoom={zoomLevel} />
             </div>
           )}
         </div>
@@ -605,52 +655,30 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
   }
 );
 
-// Minimap component
-function MiniMap({
-  canvasRef,
-  canvasW,
-  canvasH,
-  size,
-  zoom,
-}: {
+function MiniMap({ canvasRef, canvasW, canvasH, size, zoom }: {
   canvasRef: React.MutableRefObject<fabric.Canvas | null>;
-  canvasW: number;
-  canvasH: number;
-  size: number;
-  zoom: number;
+  canvasW: number; canvasH: number; size: number; zoom: number;
 }) {
   const miniRef = useRef<HTMLCanvasElement>(null);
-
   useEffect(() => {
     const draw = () => {
       const fc = canvasRef.current;
       const ctx = miniRef.current?.getContext('2d');
       if (!fc || !ctx) return;
-
       const ratio = size / canvasW;
       const h = canvasH * ratio;
       ctx.clearRect(0, 0, size, h);
-
-      // Draw garment thumbnail
-      ctx.fillStyle = 'hsl(var(--muted))';
+      ctx.fillStyle = 'hsl(0, 0%, 14%)';
       ctx.fillRect(0, 0, size, h);
-
-      // Viewport rectangle
       const vpt = fc.viewportTransform;
       if (vpt) {
         const vpLeft = -vpt[4] / vpt[0];
         const vpTop = -vpt[5] / vpt[3];
         const vpWidth = canvasW / vpt[0];
         const vpHeight = canvasH / vpt[3];
-
-        ctx.strokeStyle = 'hsl(var(--primary))';
+        ctx.strokeStyle = 'hsl(35, 100%, 55%)';
         ctx.lineWidth = 1.5;
-        ctx.strokeRect(
-          vpLeft * ratio,
-          vpTop * ratio,
-          vpWidth * ratio,
-          vpHeight * ratio
-        );
+        ctx.strokeRect(vpLeft * ratio, vpTop * ratio, vpWidth * ratio, vpHeight * ratio);
       }
     };
     draw();
@@ -659,12 +687,7 @@ function MiniMap({
   }, [canvasRef, canvasW, canvasH, size, zoom]);
 
   return (
-    <canvas
-      ref={miniRef}
-      width={size}
-      height={size * (canvasH / canvasW)}
-      className="w-full h-full"
-    />
+    <canvas ref={miniRef} width={size} height={size * (canvasH / canvasW)} className="w-full h-full" />
   );
 }
 
