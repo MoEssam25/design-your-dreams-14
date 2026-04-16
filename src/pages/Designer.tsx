@@ -12,13 +12,19 @@ import PriceDisplay from '@/components/designer/PriceDisplay';
 import DesignSummary from '@/components/designer/DesignSummary';
 import TextToolPanel from '@/components/designer/TextToolPanel';
 import LayerPanel from '@/components/designer/LayerPanel';
-import { Undo, Redo, Image, Type, Layers, Palette, Ruler, Shirt } from 'lucide-react';
+import OrderDialog from '@/components/designer/OrderDialog';
+import { useAuth } from '@/contexts/AuthContext';
+import { supabase } from '@/integrations/supabase/client';
+import { useToast } from '@/hooks/use-toast';
+import { Undo, Redo, Image, Type, Layers, Palette, Ruler, Shirt, User, LogIn } from 'lucide-react';
 
 type Panel = 'garment' | 'text' | 'layers';
 
 const Designer = () => {
   const { garmentId } = useParams<{ garmentId: string }>();
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const { toast } = useToast();
   const garment = GARMENTS.find(g => g.id === garmentId);
   const canvasRef = useRef<FabricCanvasHandle>(null);
 
@@ -27,6 +33,7 @@ const Designer = () => {
   const [material, setMaterial] = useState<Material>('cotton');
   const [activeView, setActiveView] = useState<'front' | 'back'>('front');
   const [showSummary, setShowSummary] = useState(false);
+  const [showOrder, setShowOrder] = useState(false);
   const [activePanel, setActivePanel] = useState<Panel>('garment');
   const [selectedElement, setSelectedElement] = useState<CanvasElement | null>(null);
   const [elements, setElements] = useState<CanvasElement[]>([]);
@@ -58,6 +65,35 @@ const Designer = () => {
   const handleUpdateTextStyle = useCallback((style: Partial<TextStyle>) => {
     canvasRef.current?.updateTextStyle(style);
   }, []);
+
+  const handleSaveDesign = async () => {
+    if (!user || !garment || !price) {
+      toast({ title: 'Sign in to save designs', description: 'Guest designs are saved locally only.' });
+      // Fallback to localStorage for guests
+      const json = canvasRef.current?.getDesignJSON();
+      const designs = JSON.parse(localStorage.getItem('stitch_designs_v2') || '[]');
+      designs.push({ garmentId: garment?.id, color, size, material, canvas: json, savedAt: new Date().toISOString() });
+      localStorage.setItem('stitch_designs_v2', JSON.stringify(designs));
+      return;
+    }
+
+    const canvasJson = canvasRef.current?.getDesignJSON() ?? '{}';
+    const { error } = await supabase.from('designs').insert([{
+      user_id: user.id,
+      garment_id: garment.id,
+      name: `${garment.name} Design`,
+      color,
+      size,
+      material,
+      canvas_json: canvasJson,
+      total_price: price.total,
+    }]);
+    if (error) {
+      toast({ title: 'Save failed', description: error.message, variant: 'destructive' });
+    } else {
+      toast({ title: 'Design saved!', description: 'View it in your dashboard.' });
+    }
+  };
 
   if (!garment) {
     return (
@@ -95,7 +131,6 @@ const Designer = () => {
           </button>
           <h1 className="font-display font-bold gradient-text">STITCH STUDIO</h1>
           <div className="flex items-center gap-2">
-            {/* Undo/Redo */}
             <button
               onClick={() => { canvasRef.current?.undo(); refreshElements(); }}
               disabled={!canvasRef.current?.canUndo()}
@@ -112,6 +147,15 @@ const Designer = () => {
             >
               <Redo className="w-4 h-4" />
             </button>
+            {user ? (
+              <button onClick={() => navigate('/dashboard')} className="p-2 rounded-lg text-muted-foreground hover:text-foreground" title="Dashboard">
+                <User className="w-4 h-4" />
+              </button>
+            ) : (
+              <button onClick={() => navigate('/login')} className="p-2 rounded-lg text-muted-foreground hover:text-foreground" title="Sign in">
+                <LogIn className="w-4 h-4" />
+              </button>
+            )}
             <button
               onClick={() => setShowSummary(true)}
               className="bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm font-semibold hover:opacity-90 transition-opacity"
@@ -126,7 +170,6 @@ const Designer = () => {
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           {/* Left Panel */}
           <div className="lg:col-span-3 space-y-2 order-2 lg:order-1">
-            {/* Panel tabs */}
             <div className="flex gap-1 glass-card p-1">
               {([
                 { id: 'garment' as Panel, icon: Shirt, label: 'Garment' },
@@ -146,7 +189,6 @@ const Designer = () => {
               ))}
             </div>
 
-            {/* Garment panel */}
             {activePanel === 'garment' && (
               <div className="space-y-4">
                 <div className="glass-card p-4">
@@ -164,7 +206,6 @@ const Designer = () => {
               </div>
             )}
 
-            {/* Text panel */}
             {activePanel === 'text' && (
               <div className="glass-card p-4">
                 <h3 className="font-display font-semibold text-sm uppercase tracking-wider text-muted-foreground mb-3">Add & Style Text</h3>
@@ -176,7 +217,6 @@ const Designer = () => {
               </div>
             )}
 
-            {/* Layers panel */}
             {activePanel === 'layers' && (
               <div className="glass-card p-4">
                 <h3 className="font-display font-semibold text-sm uppercase tracking-wider text-muted-foreground mb-3">Layers</h3>
@@ -195,28 +235,19 @@ const Designer = () => {
           {/* Center - Canvas */}
           <div className="lg:col-span-6 order-1 lg:order-2">
             <div className="glass-card p-4">
-              {/* View Toggle */}
               <div className="flex justify-center gap-2 mb-4">
                 <button
                   onClick={() => setActiveView('front')}
                   className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                    activeView === 'front'
-                      ? 'bg-primary text-primary-foreground'
-                      : 'bg-secondary text-secondary-foreground hover:bg-secondary/80'
+                    activeView === 'front' ? 'bg-primary text-primary-foreground' : 'bg-secondary text-secondary-foreground hover:bg-secondary/80'
                   }`}
-                >
-                  Front
-                </button>
+                >Front</button>
                 <button
                   onClick={() => setActiveView('back')}
                   className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                    activeView === 'back'
-                      ? 'bg-primary text-primary-foreground'
-                      : 'bg-secondary text-secondary-foreground hover:bg-secondary/80'
+                    activeView === 'back' ? 'bg-primary text-primary-foreground' : 'bg-secondary text-secondary-foreground hover:bg-secondary/80'
                   }`}
-                >
-                  Back
-                </button>
+                >Back</button>
               </div>
 
               <FabricCanvas
@@ -228,7 +259,6 @@ const Designer = () => {
                 onElementsChange={refreshElements}
               />
 
-              {/* Selected element info */}
               {selectedElement && (
                 <div className="mt-3 flex items-center justify-between bg-secondary/50 rounded-lg px-3 py-2">
                   <span className="text-xs text-muted-foreground">
@@ -244,18 +274,11 @@ const Designer = () => {
             </div>
           </div>
 
-          {/* Right Panel - Images & Price */}
+          {/* Right Panel */}
           <div className="lg:col-span-3 space-y-4 order-3">
             <div className="glass-card p-4">
-              <h3 className="font-display font-semibold text-sm uppercase tracking-wider text-muted-foreground mb-3">
-                Image Placement
-              </h3>
-              <ImageUploader
-                zones={garment.zones}
-                images={[]}
-                onAdd={handleImageAdd}
-                onRemove={() => {}}
-              />
+              <h3 className="font-display font-semibold text-sm uppercase tracking-wider text-muted-foreground mb-3">Image Placement</h3>
+              <ImageUploader zones={garment.zones} images={[]} onAdd={handleImageAdd} onRemove={() => {}} />
             </div>
 
             {price && (
@@ -264,27 +287,33 @@ const Designer = () => {
               </div>
             )}
 
-            {/* Save/Load design JSON */}
             <div className="glass-card p-4 space-y-2">
-              <h3 className="font-display font-semibold text-sm uppercase tracking-wider text-muted-foreground mb-3">Save / Load</h3>
-              <button
-                onClick={() => {
-                  const json = canvasRef.current?.getDesignJSON();
-                  if (json) {
-                    const designs = JSON.parse(localStorage.getItem('stitch_designs_v2') || '[]');
-                    designs.push({ garmentId: garment.id, color, size, material, view: activeView, canvas: json, savedAt: new Date().toISOString() });
-                    localStorage.setItem('stitch_designs_v2', JSON.stringify(designs));
-                    alert('Design saved!');
-                  }
-                }}
-                className="w-full text-sm px-3 py-2 rounded-lg bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors"
-              >
+              <h3 className="font-display font-semibold text-sm uppercase tracking-wider text-muted-foreground mb-3">Actions</h3>
+              <button onClick={handleSaveDesign}
+                className="w-full text-sm px-3 py-2 rounded-lg bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors">
                 💾 Save Design
+              </button>
+              <button onClick={() => setShowOrder(true)}
+                className="w-full text-sm px-3 py-2 rounded-lg bg-accent text-accent-foreground hover:opacity-90 transition-opacity font-semibold">
+                🛒 Order Now
               </button>
             </div>
           </div>
         </div>
       </div>
+
+      {price && (
+        <OrderDialog
+          open={showOrder}
+          onClose={() => setShowOrder(false)}
+          garment={garment}
+          color={color}
+          size={size}
+          material={material}
+          price={price}
+          canvasRef={canvasRef}
+        />
+      )}
     </div>
   );
 };
