@@ -65,17 +65,17 @@ const OrderDialog = ({ open, onClose, garment, color, size, material, price, can
     }).select('id').single();
 
     // Create order
-    const { error } = await supabase.from('orders').insert({
+    const { error } = await supabase.from('orders').insert([{
       user_id: user.id,
-      design_id: designData?.id ?? null,
-      design_snapshot: { garment: garment.id, color, size, material, price },
+      design_id: designData?.id ?? undefined,
+      design_snapshot: { garment: garment.id, color, size, material, price } as unknown as import('@/integrations/supabase/types').Json,
       total_price: price.total,
       shipping_name: shipping.name,
       shipping_address: shipping.address,
       shipping_city: shipping.city,
       shipping_country: shipping.country,
       shipping_phone: shipping.phone,
-    });
+    }]);
 
     setSubmitting(false);
     if (error) {
