@@ -14,7 +14,134 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      designs: {
+        Row: {
+          canvas_json: string | null
+          color: string
+          created_at: string
+          garment_id: string
+          id: string
+          material: string
+          name: string
+          size: string
+          thumbnail_url: string | null
+          total_price: number | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          canvas_json?: string | null
+          color?: string
+          created_at?: string
+          garment_id: string
+          id?: string
+          material?: string
+          name?: string
+          size?: string
+          thumbnail_url?: string | null
+          total_price?: number | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          canvas_json?: string | null
+          color?: string
+          created_at?: string
+          garment_id?: string
+          id?: string
+          material?: string
+          name?: string
+          size?: string
+          thumbnail_url?: string | null
+          total_price?: number | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      orders: {
+        Row: {
+          created_at: string
+          design_id: string | null
+          design_snapshot: Json
+          id: string
+          shipping_address: string
+          shipping_city: string
+          shipping_country: string
+          shipping_name: string
+          shipping_phone: string | null
+          status: string
+          total_price: number
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          design_id?: string | null
+          design_snapshot: Json
+          id?: string
+          shipping_address: string
+          shipping_city: string
+          shipping_country?: string
+          shipping_name: string
+          shipping_phone?: string | null
+          status?: string
+          total_price: number
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          design_id?: string | null
+          design_snapshot?: Json
+          id?: string
+          shipping_address?: string
+          shipping_city?: string
+          shipping_country?: string
+          shipping_name?: string
+          shipping_phone?: string | null
+          status?: string
+          total_price?: number
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "orders_design_id_fkey"
+            columns: ["design_id"]
+            isOneToOne: false
+            referencedRelation: "designs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      profiles: {
+        Row: {
+          avatar_url: string | null
+          created_at: string
+          display_name: string | null
+          id: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          avatar_url?: string | null
+          created_at?: string
+          display_name?: string | null
+          id?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          avatar_url?: string | null
+          created_at?: string
+          display_name?: string | null
+          id?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
