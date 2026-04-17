@@ -3,7 +3,7 @@ import { fabric } from 'fabric';
 import type { GarmentConfig, GarmentType, PlacementZone } from '@/lib/garments';
 import type { TextStyle } from '@/lib/designState';
 import { UndoRedoManager } from '@/lib/designState';
-import { ZoomIn, ZoomOut, Maximize, Move, RefreshCw } from 'lucide-react';
+import { ZoomIn, ZoomOut, Maximize, Move, RefreshCw, Sun, Moon } from 'lucide-react';
 
 import tshirtFront from '@/assets/garments/tshirt-front.png';
 import tshirtBack from '@/assets/garments/tshirt-back.png';
