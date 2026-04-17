@@ -101,6 +101,10 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
     const isPanningRef = useRef(false);
     const lastPanPosRef = useRef<{ x: number; y: number } | null>(null);
     const [zoomLevel, setZoomLevel] = useState(1);
+    const [canvasBg, setCanvasBg] = useState<'light' | 'dark'>(() => {
+      if (typeof window === 'undefined') return 'light';
+      return (localStorage.getItem('stitch_canvas_bg') as 'light' | 'dark') || 'light';
+    });
     const wrapperRef = useRef<HTMLDivElement>(null);
     const isMountedRef = useRef(true);
     
