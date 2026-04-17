@@ -3,7 +3,7 @@ import { fabric } from 'fabric';
 import type { GarmentConfig, GarmentType, PlacementZone } from '@/lib/garments';
 import type { TextStyle } from '@/lib/designState';
 import { UndoRedoManager } from '@/lib/designState';
-import { ZoomIn, ZoomOut, Maximize, Move, RefreshCw } from 'lucide-react';
+import { ZoomIn, ZoomOut, Maximize, Move, RefreshCw, Sun, Moon } from 'lucide-react';
 
 import tshirtFront from '@/assets/garments/tshirt-front.png';
 import tshirtBack from '@/assets/garments/tshirt-back.png';
@@ -101,6 +101,10 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
     const isPanningRef = useRef(false);
     const lastPanPosRef = useRef<{ x: number; y: number } | null>(null);
     const [zoomLevel, setZoomLevel] = useState(1);
+    const [canvasBg, setCanvasBg] = useState<'light' | 'dark'>(() => {
+      if (typeof window === 'undefined') return 'light';
+      return (localStorage.getItem('stitch_canvas_bg') as 'light' | 'dark') || 'light';
+    });
     const wrapperRef = useRef<HTMLDivElement>(null);
     const isMountedRef = useRef(true);
     
@@ -659,6 +663,22 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
             </button>
           </div>
           <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-0.5 bg-secondary rounded-md p-0.5">
+              <button
+                onClick={() => { setCanvasBg('light'); localStorage.setItem('stitch_canvas_bg', 'light'); }}
+                className={`p-1 rounded transition-all ${canvasBg === 'light' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+                title="Light workspace"
+              >
+                <Sun className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => { setCanvasBg('dark'); localStorage.setItem('stitch_canvas_bg', 'dark'); }}
+                className={`p-1 rounded transition-all ${canvasBg === 'dark' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+                title="Dark workspace"
+              >
+                <Moon className="w-3.5 h-3.5" />
+              </button>
+            </div>
             <span className="text-[10px] text-muted-foreground flex items-center gap-1">
               <Move className="w-3 h-3" /> Alt+drag to pan
             </span>
@@ -676,7 +696,10 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
           </div>
         </div>
 
-        <div className="flex items-center justify-center bg-muted/30 rounded-lg p-4 overflow-hidden relative">
+        <div
+          className="flex items-center justify-center rounded-lg p-4 overflow-hidden relative transition-colors"
+          style={{ backgroundColor: canvasBg === 'light' ? '#f5f5f5' : '#1a1a1a' }}
+        >
           <canvas
             ref={canvasElRef}
             className="max-w-full h-auto max-h-[500px]"
