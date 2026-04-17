@@ -86,7 +86,7 @@ interface FabricCanvasProps {
 }
 
 const CANVAS_W = 512;
-const CANVAS_H = 640; // Fixed height — cap uses same, just renders differently
+const CANVAS_H = 640;
 const MIN_ZOOM = 0.3;
 const MAX_ZOOM = 3;
 const ZOOM_STEP = 0.1;
@@ -102,12 +102,15 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
     const lastPanPosRef = useRef<{ x: number; y: number } | null>(null);
     const [zoomLevel, setZoomLevel] = useState(1);
     const wrapperRef = useRef<HTMLDivElement>(null);
-    // Store latest props in refs so callbacks don't go stale
+    const isMountedRef = useRef(true);
+    
+    // Store latest props in refs
     const garmentRef = useRef(garment);
     const colorRef = useRef(color);
     const viewRef = useRef(view);
     const onSelectionChangeRef = useRef(onSelectionChange);
     const onElementsChangeRef = useRef(onElementsChange);
+    
     garmentRef.current = garment;
     colorRef.current = color;
     viewRef.current = view;
@@ -115,19 +118,23 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
     onElementsChangeRef.current = onElementsChange;
 
     const bgLoadCounterRef = useRef(0);
+    const isBackgroundLoadingRef = useRef(false);
 
-    // Initialize fabric canvas ONCE — never re-create
+    // ✅ Initialize fabric canvas ONCE - with proper cleanup prevention
     useEffect(() => {
       if (!canvasElRef.current || fcRef.current) return;
+      
       const fc = new fabric.Canvas(canvasElRef.current, {
         width: CANVAS_W,
         height: CANVAS_H,
         selection: true,
         preserveObjectStacking: true,
+        renderOnAddRemove: true,
       });
       fcRef.current = fc;
 
       fc.on('selection:created', () => {
+        if (!isMountedRef.current) return;
         const obj = fc.getActiveObject();
         if (!obj) { onSelectionChangeRef.current?.(null); return; }
         onSelectionChangeRef.current?.({
@@ -136,7 +143,9 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
           label: obj.type === 'textbox' ? (obj as fabric.Textbox).text?.slice(0, 20) ?? 'Text' : 'Image',
         });
       });
+      
       fc.on('selection:updated', () => {
+        if (!isMountedRef.current) return;
         const obj = fc.getActiveObject();
         if (!obj) { onSelectionChangeRef.current?.(null); return; }
         onSelectionChangeRef.current?.({
@@ -145,20 +154,30 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
           label: obj.type === 'textbox' ? (obj as fabric.Textbox).text?.slice(0, 20) ?? 'Text' : 'Image',
         });
       });
-      fc.on('selection:cleared', () => onSelectionChangeRef.current?.(null));
+      
+      fc.on('selection:cleared', () => {
+        if (!isMountedRef.current) return;
+        onSelectionChangeRef.current?.(null);
+      });
+      
       fc.on('object:modified', () => {
+        if (!isMountedRef.current) return;
         undoMgr.current.save(JSON.stringify(fc.toJSON(['_designId', '_designType'])));
         onElementsChangeRef.current?.();
         forceRender(n => n + 1);
       });
+      
       fc.on('object:added', () => {
+        if (!isMountedRef.current) return;
         if (!isLoadingRef.current) {
           undoMgr.current.save(JSON.stringify(fc.toJSON(['_designId', '_designType'])));
           onElementsChangeRef.current?.();
           forceRender(n => n + 1);
         }
       });
+      
       fc.on('object:removed', () => {
+        if (!isMountedRef.current) return;
         if (!isLoadingRef.current) {
           undoMgr.current.save(JSON.stringify(fc.toJSON(['_designId', '_designType'])));
           onElementsChangeRef.current?.();
@@ -189,6 +208,7 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
           fc.renderAll();
         }
       });
+      
       fc.on('mouse:move', (opt) => {
         if (!isPanningRef.current || !lastPanPosRef.current) return;
         const e = opt.e as MouseEvent;
@@ -198,6 +218,7 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
         lastPanPosRef.current = { x: e.clientX, y: e.clientY };
         fc.setCursor('grabbing');
       });
+      
       fc.on('mouse:up', () => {
         if (isPanningRef.current) {
           isPanningRef.current = false;
@@ -206,18 +227,29 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
           fc.setCursor('default');
         }
       });
+      
       fc.on('mouse:over', (opt) => {
         if (opt.target) fc.setCursor('move');
       });
 
-      return () => { fc.dispose(); fcRef.current = null; };
-    }, []); // Empty deps — initialize ONCE
+      // ✅ Save initial empty state for undo
+      undoMgr.current.save(JSON.stringify(fc.toJSON(['_designId', '_designType'])));
+
+      // ✅ Cleanup: ONLY on unmount, not on re-renders
+      return () => {
+        isMountedRef.current = false;
+        if (fcRef.current) {
+          fcRef.current.dispose();
+          fcRef.current = null;
+        }
+      };
+    }, []); // Empty deps - initialize ONCE
 
     // Keyboard panning
     useEffect(() => {
       const handleKeyDown = (e: KeyboardEvent) => {
         const fc = fcRef.current;
-        if (!fc) return;
+        if (!fc || !isMountedRef.current) return;
         const PAN_STEP = 20;
         switch (e.key) {
           case 'ArrowLeft': fc.relativePan(new fabric.Point(PAN_STEP, 0)); e.preventDefault(); break;
@@ -230,16 +262,18 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
       return () => window.removeEventListener('keydown', handleKeyDown);
     }, []);
 
-    // Load background when garment/color/view changes — uses counter to cancel stale loads
+    // ✅ Load background when garment/color/view changes - with proper async handling
     const loadBackground = useCallback(() => {
       const fc = fcRef.current;
-      if (!fc) return;
+      if (!fc || !isMountedRef.current) return;
+      
       const g = garmentRef.current;
       const c = colorRef.current;
       const v = viewRef.current;
       const imgSrc = GARMENT_IMAGES[g.id]?.[v];
       if (!imgSrc) return;
 
+      // Increment counter to handle race conditions
       bgLoadCounterRef.current += 1;
       const myLoad = bgLoadCounterRef.current;
 
@@ -250,12 +284,14 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
 
       const img = new Image();
       img.crossOrigin = 'anonymous';
+      
       img.onload = () => {
-        // Abort if a newer load has started
-        if (bgLoadCounterRef.current !== myLoad) return;
-
+        // ✅ Ignore if component unmounted or newer load started
+        if (!isMountedRef.current || bgLoadCounterRef.current !== myLoad) return;
+        
         octx.clearRect(0, 0, CANVAS_W, CANVAS_H);
         octx.drawImage(img, 0, 0, CANVAS_W, CANVAS_H);
+        
         if (c !== '#ffffff') {
           octx.save();
           octx.globalCompositeOperation = 'multiply';
@@ -287,35 +323,42 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
         });
 
         const dataUrl = offscreen.toDataURL();
-        fc.setBackgroundImage(dataUrl, () => fc.renderAll(), {
-          originX: 'left', originY: 'top',
-          scaleX: 1, scaleY: 1,
-        });
+        
+        // ✅ Verify canvas still exists before setting background
+        if (fcRef.current && isMountedRef.current && bgLoadCounterRef.current === myLoad) {
+          fcRef.current.setBackgroundImage(dataUrl, () => {
+            if (fcRef.current && isMountedRef.current) {
+              fcRef.current.renderAll();
+            }
+          }, {
+            originX: 'left', 
+            originY: 'top',
+            scaleX: 1, 
+            scaleY: 1,
+          });
+        }
       };
+      
       img.onerror = () => {
-        // Retry once on error
-        if (bgLoadCounterRef.current === myLoad) {
+        if (isMountedRef.current && bgLoadCounterRef.current === myLoad) {
           setTimeout(() => {
-            if (bgLoadCounterRef.current === myLoad) {
+            if (isMountedRef.current && bgLoadCounterRef.current === myLoad) {
               img.src = imgSrc;
             }
           }, 500);
         }
       };
+      
       img.src = imgSrc;
     }, []);
 
+    // ✅ Trigger background load when dependencies change
     useEffect(() => {
       loadBackground();
     }, [garment.id, color, view, loadBackground]);
 
-    // Also re-render periodically to keep canvas alive (prevents GC issues)
-    useEffect(() => {
-      const interval = setInterval(() => {
-        fcRef.current?.renderAll();
-      }, 5000);
-      return () => clearInterval(interval);
-    }, []);
+    // ✅ REMOVED the problematic interval that caused issues
+    // (No more automatic re-rendering every 5 seconds)
 
     const handleZoomIn = () => {
       const fc = fcRef.current;
@@ -344,8 +387,9 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
     useImperativeHandle(ref, () => ({
       addImage(dataUrl: string, zone?: PlacementZone) {
         const fc = fcRef.current;
-        if (!fc) return;
+        if (!fc || !isMountedRef.current) return;
         fabric.Image.fromURL(dataUrl, (img) => {
+          if (!fcRef.current || !isMountedRef.current) return;
           const zones = ZONE_MAPS[garmentRef.current.id]?.[viewRef.current] ?? {};
           const zoneKey = zone ?? 'chest';
           const pos = zones[zoneKey];
@@ -374,7 +418,7 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
 
       addText(text: string, style: TextStyle) {
         const fc = fcRef.current;
-        if (!fc) return;
+        if (!fc || !isMountedRef.current) return;
         const tb = new fabric.Textbox(text, {
           left: CANVAS_W / 2,
           top: CANVAS_H / 2,
@@ -419,7 +463,7 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
 
       updateTextStyle(style: Partial<TextStyle>) {
         const fc = fcRef.current;
-        if (!fc) return;
+        if (!fc || !isMountedRef.current) return;
         const obj = fc.getActiveObject();
         if (!obj || obj.type !== 'textbox') return;
         const tb = obj as fabric.Textbox;
@@ -463,14 +507,14 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
 
       deleteSelected() {
         const fc = fcRef.current;
-        if (!fc) return;
+        if (!fc || !isMountedRef.current) return;
         const obj = fc.getActiveObject();
         if (obj) { fc.remove(obj); fc.discardActiveObject(); fc.renderAll(); }
       },
 
       bringForward() {
         const fc = fcRef.current;
-        if (!fc) return;
+        if (!fc || !isMountedRef.current) return;
         const obj = fc.getActiveObject();
         if (obj) {
           fc.bringForward(obj); fc.renderAll();
@@ -482,7 +526,7 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
 
       sendBackward() {
         const fc = fcRef.current;
-        if (!fc) return;
+        if (!fc || !isMountedRef.current) return;
         const obj = fc.getActiveObject();
         if (obj) {
           fc.sendBackwards(obj); fc.renderAll();
@@ -494,7 +538,7 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
 
       undo() {
         const fc = fcRef.current;
-        if (!fc) return;
+        if (!fc || !isMountedRef.current) return;
         const state = undoMgr.current.undo();
         if (state) {
           isLoadingRef.current = true;
@@ -509,7 +553,7 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
 
       redo() {
         const fc = fcRef.current;
-        if (!fc) return;
+        if (!fc || !isMountedRef.current) return;
         const state = undoMgr.current.redo();
         if (state) {
           isLoadingRef.current = true;
@@ -539,7 +583,7 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
 
       selectElement(id: string) {
         const fc = fcRef.current;
-        if (!fc) return;
+        if (!fc || !isMountedRef.current) return;
         const obj = fc.getObjects().find(o => (o as any)._designId === id);
         if (obj) { fc.setActiveObject(obj); fc.renderAll(); }
       },
@@ -565,7 +609,7 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
 
       loadDesignJSON(json: string) {
         const fc = fcRef.current;
-        if (!fc) return;
+        if (!fc || !isMountedRef.current) return;
         isLoadingRef.current = true;
         fc.loadFromJSON(json, () => {
           fc.renderAll();
@@ -600,7 +644,6 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
 
     return (
       <div className="relative" ref={wrapperRef}>
-        {/* Zoom controls bar */}
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-1">
             <button onClick={handleZoomOut} disabled={zoomLevel <= MIN_ZOOM}
@@ -633,7 +676,6 @@ const FabricCanvas = forwardRef<FabricCanvasHandle, FabricCanvasProps>(
           </div>
         </div>
 
-        {/* Canvas area */}
         <div className="flex items-center justify-center bg-muted/30 rounded-lg p-4 overflow-hidden relative">
           <canvas
             ref={canvasElRef}
